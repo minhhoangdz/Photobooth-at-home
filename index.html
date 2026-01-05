@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photobooth at home</title>
+    <style>
+        /* --- CSS GIAO DIỆN --- */
+        :root { --primary-color: #ff6b81; --bg-color: #fce4ec; }
+        body {
+            margin: 0; padding: 20px;
+            font-family: 'Segoe UI', sans-serif;
+            background-color: var(--bg-color);
+            display: flex; flex-direction: column; align-items: center;
+            min-height: 100vh;
+        }
+        h1 { color: var(--primary-color); margin-bottom: 10px; }
+        
+        .camera-container {
+            position: relative; width: 100%; max-width: 480px;
+            border-radius: 15px; overflow: hidden;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1); background: #000;
+        }
+        video { width: 100%; display: block; transform: scaleX(-1); }
+
+        #countdown-overlay {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 80px; font-weight: bold; color: white;
+            text-shadow: 0 0 10px rgba(0,0,0,0.5);
+            display: none; z-index: 10;
+        }
+        #flash {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: white; opacity: 0; pointer-events: none; z-index: 20; transition: opacity 0.1s;
+        }
+
+        /* Nút chỉnh màu */
+        .filter-controls { display: flex; gap: 10px; margin: 14px 0; flex-wrap: wrap; justify-content: center; }
+        .filter-btn { padding: 15px 20px; border: 3px solid #d5c6c6; font-size: 14px; cursor: pointer; border-radius: 20px; }
+        .filter-btn:hover { border-color: var(--primary-color); }
+        
+        .controls { display: flex; gap: 15px; margin-bottom: 20px; }
+        button {
+            padding: 12px 25px; border: none; border-radius: 50px;
+            font-size: 16px; font-weight: bold; cursor: pointer; transition: transform 0.2s;
+        }
+        #btn-start { background: var(--primary-color); color: white; box-shadow: 0 4px 10px rgba(255, 107, 129, 0.4); }
+        #btn-start:active { transform: scale(0.95); }
+        #btn-download { background: #333; color: white; display: none; }
+        
+        #result-area {
+            display: none; flex-direction: column; align-items: center;
+            background: white; padding: 15px; border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        #final-image { max-width: 200px; border: 1px solid #ddd; }
+        canvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <h1>✨ Photobooth At home ✨</h1>
+
+    <div class="camera-container">
+        <video id="video" autoplay playsinline></video>
+        <div id="countdown-overlay"></div>
+        <div id="flash"></div>
+    </div>
+
+    <div class="filter-controls">
+        <button class="filter-btn" onclick="setFilter('none')" style="background: #fff; color: #333;">None</button>
+        <button class="filter-btn" onclick="setFilter('grayscale(100%)')" style="background: #555; color: #fff;">BNW</button>
+        <button class="filter-btn" onclick="setFilter('sepia(60%) contrast(120%)')" style="background: #d4a373; color: #fff;">Vintage</button>
+        <button class="filter-btn" onclick="setFilter('saturate(200%)')" style="background: #ff6b81; color: #fff;">Fresh</button>
+        <button class="filter-btn" onclick="setFilter('hue-rotate(90deg)')" style="background: #a29bfe; color: #fff;">Dream</button>
+    </div>
+
+    <div class="controls">
+        <button id="btn-start">ㅤㅤㅤ📸ㅤㅤㅤ</button>
+        <button id="btn-restart" style="display:none; background:#ccc;">ㅤㅤ🔄ㅤㅤ</button>
+    </div>
+
+    <div id="result-area">
+        <p>Ảnh của bạn đã xong!</p>
+        <img id="final-image" alt="Kết quả">
+        <br>
+        <button id="btn-download">⬇ Tải ảnh về máy</button>
+    </div>
+
+    <audio id="shutter-sound" src="https://www.soundjay.com/mechanical/sounds/camera-shutter-click-08.mp3"></audio>
+
+    <img id="frame-img" src="https://i.imgur.com/3p6v0bU.png" crossorigin="anonymous" style="display:none;">
+
+    <canvas id="temp-canvas"></canvas>
+    <canvas id="strip-canvas"></canvas>
+
+    <script>
+        /* --- JAVASCRIPT LOGIC --- */
+        const video = document.getElementById('video');
+        const btnStart = document.getElementById('btn-start');
+        const btnRestart = document.getElementById('btn-restart');
+        const btnDownload = document.getElementById('btn-download');
+        const countdownEl = document.getElementById('countdown-overlay');
+        const flashEl = document.getElementById('flash');
+        const resultArea = document.getElementById('result-area');
+        const finalImage = document.getElementById('final-image');
+        const shutterSound = document.getElementById('shutter-sound');
+        const frameImg = document.getElementById('frame-img');
+        
+        const tempCanvas = document.getElementById('temp-canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        const stripCanvas = document.getElementById('strip-canvas');
+        const stripCtx = stripCanvas.getContext('2d');
+
+        // Cấu hình
+        const PHOTO_COUNT = 4;
+        const COUNTDOWN_TIME = 3;
+        const STRIP_COLOR = "#ffffff"; 
+        const GAP = 20; 
+        const MARGIN = 30; 
+        
+        let currentFilter = 'none'; // Biến lưu bộ lọc hiện tại
+
+        // 1. Khởi động Camera
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 1280, height: 720, facingMode: "user" },
+                    audio: false 
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                alert("Lỗi Camera: " + err.message);
+            }
+        }
+        startCamera();
+
+        // 2. Hàm chỉnh Filter (Cập nhật mới)
+        function setFilter(filterVal) {
+            currentFilter = filterVal;
+            video.style.filter = filterVal; // Hiển thị preview ngay trên video
+        }
+
+        const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        function triggerFlash() {
+            flashEl.style.opacity = 1;
+            shutterSound.currentTime = 0;
+            shutterSound.play(); // Phát tiếng chụp
+            setTimeout(() => flashEl.style.opacity = 0, 100);
+        }
+
+        // 3. Logic Chụp Chính
+        btnStart.addEventListener('click', async () => {
+            btnStart.style.display = 'none';
+            resultArea.style.display = 'none';
+            
+            const w = video.videoWidth;
+            const h = video.videoHeight;
+
+            // Tính toán kích thước dải ảnh
+            stripCanvas.width = w + (MARGIN * 2);
+            stripCanvas.height = (h * PHOTO_COUNT) + (GAP * (PHOTO_COUNT - 1)) + (MARGIN * 2);
+            
+            // Vẽ nền trắng
+            stripCtx.fillStyle = STRIP_COLOR;
+            stripCtx.fillRect(0, 0, stripCanvas.width, stripCanvas.height);
+
+            // Vòng lặp chụp
+            for (let i = 0; i < PHOTO_COUNT; i++) {
+                // Đếm ngược
+                countdownEl.style.display = 'block';
+                for (let c = COUNTDOWN_TIME; c > 0; c--) {
+                    countdownEl.innerText = c;
+                    await wait(1000);
+                }
+                countdownEl.style.display = 'none';
+
+                triggerFlash();
+                
+                // --- XỬ LÝ ẢNH & FILTER ---
+                tempCanvas.width = w;
+                tempCanvas.height = h;
+                
+                // Áp dụng Filter vào Canvas
+                tempCtx.filter = currentFilter;
+
+                // Lật ngược ảnh để giống gương
+                tempCtx.translate(w, 0);
+                tempCtx.scale(-1, 1);
+                tempCtx.drawImage(video, 0, 0, w, h);
+                
+                // Reset transform & filter
+                tempCtx.setTransform(1, 0, 0, 1, 0, 0); 
+                tempCtx.filter = 'none';
+
+                // Vẽ vào dải ảnh chính
+                const yPos = MARGIN + (i * (h + GAP));
+                const xPos = MARGIN;
+                stripCtx.drawImage(tempCanvas, 0, 0, w, h, xPos, yPos, w, h);
+
+                if (i < PHOTO_COUNT - 1) await wait(1000); 
+            }
+
+            // --- BƯỚC MỚI: VẼ KHUNG (FRAME) LÊN TRÊN CÙNG ---
+            // Code này sẽ kéo giãn khung đè lên toàn bộ dải ảnh
+            // Nếu bạn có file frame.png, nó sẽ hiển thị ở đây
+            if (frameImg.complete && frameImg.naturalHeight !== 0) {
+                 stripCtx.drawImage(frameImg, 0, 0, stripCanvas.width, stripCanvas.height);
+            }
+
+            // Hiển thị kết quả
+            const finalDataUrl = stripCanvas.toDataURL('image/png');
+            finalImage.src = finalDataUrl;
+            resultArea.style.display = 'flex';
+            btnDownload.style.display = 'inline-block';
+            btnRestart.style.display = 'inline-block';
+            
+            btnDownload.onclick = () => {
+                const link = document.createElement('a');
+                link.download = 'photobooth-' + Date.now() + '.png';
+                link.href = finalDataUrl;
+                link.click();
+            };
+        });
+
+        btnRestart.addEventListener('click', () => {
+            resultArea.style.display = 'none';
+            btnStart.style.display = 'inline-block';
+            btnRestart.style.display = 'none';
+        });
+
+        // Hàm setFilter cần phải ở phạm vi global để nút HTML gọi được
+        window.setFilter = setFilter;
+    </script>
+</body>
+</html>
